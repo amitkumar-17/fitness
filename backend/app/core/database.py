@@ -13,3 +13,11 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncSession:
     async with async_session() as session:
         yield session
+
+
+async def init_db() -> None:
+    """Create application tables for local/dev deployments without migrations."""
+    from app.models import chat, user  # noqa: F401
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

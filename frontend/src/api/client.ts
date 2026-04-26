@@ -16,7 +16,9 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const status = error.response?.status;
+    const detail = error.response?.data?.detail;
+    if (status === 401 || (status === 404 && detail === "User not found")) {
       useAuthStore.getState().logout();
       window.location.href = "/login";
     }

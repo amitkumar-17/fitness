@@ -5,8 +5,10 @@ The AI uses RAG to pull relevant info from your PDFs and generates personalized 
 """
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from openai import OpenAIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 import os
 import shutil
 
@@ -70,7 +72,17 @@ async def send_message(
     }
 
     # Generate AI response using RAG
-    ai_result = await generate_response(data.message, user_profile)
+    try:
+        ai_result = await generate_response(data.message, user_profile)
+    except OpenAIError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI provider error: {exc}",
+        ) from exc
+    except (OSError, SQLAlchemyError) as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Service unavailable") from exc
 
     # Save assistant message
     assistant_msg = ChatMessage(
@@ -93,19 +105,25 @@ async def send_message(
 async def upload_pdf(
     file: UploadFile = File(...),
     category: str = "general",
+    subcategory: str | None = None,
     user_id: str = Depends(get_current_user),
 ):
     """Upload a PDF file to be ingested into the knowledge base."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
-    os.makedirs(settings.PDF_UPLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(settings.PDF_UPLOAD_DIR, file.filename)
+    # Create category subfolder to maintain structure
+    upload_dir = os.path.join(settings.PDF_UPLOAD_DIR, category.title() + "Plans")
+    if subcategory:
+        upload_dir = os.path.join(upload_dir, subcategory)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    file_path = os.path.join(upload_dir, file.filename)
 
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    result = ingest_single_pdf(file_path, category=category)
+    result = ingest_single_pdf(file_path, category=category, subcategory=subcategory)
     return {"message": f"PDF '{file.filename}' ingested successfully", **result}
 
 

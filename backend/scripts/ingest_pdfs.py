@@ -1,23 +1,14 @@
 """
-CLI Script to ingest your PDF files into the vector database.
+CLI script to ingest PDF files into the app knowledge base.
 
 Usage:
-    python -m scripts.ingest_pdfs              # Ingest all PDFs from default folder
-    python -m scripts.ingest_pdfs ./my_pdfs    # Ingest from a specific folder
-
-Place your workout and diet PDF files in the `data/pdfs/` folder and run this script.
-The script will:
-1. Read all PDF files
-2. Split them into searchable chunks
-3. Store embeddings in ChromaDB
-
-After running this, the AI will use your PDF content to generate personalized plans.
+    python -m scripts.ingest_pdfs
+    python -m scripts.ingest_pdfs ./my_pdfs
 """
 
-import sys
 import os
+import sys
 
-# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.ai.ingestion import ingest_pdfs
@@ -31,23 +22,41 @@ def main():
     print("=" * 60)
 
     if pdf_dir:
-        print(f"\n📁 Ingesting PDFs from: {pdf_dir}")
+        print(f"\nIngesting PDFs from: {pdf_dir}")
     else:
-        print(f"\n📁 Ingesting PDFs from default directory: ./data/pdfs/")
+        print("\nIngesting PDFs from default directory: ./data/pdfs/")
+        print("\nExpected structure:")
+        print("  data/pdfs/")
+        print("    DietPlans/")
+        print("      3300 calories diet/")
+        print("        plan.pdf")
+        print("      2500 calories diet/")
+        print("        plan.pdf")
+        print("    WorkoutPlans/")
+        print("      Push Pull Legs/")
+        print("        routine.pdf")
+        print("      ...")
 
-    print("⏳ Processing...")
-
+    print("\nProcessing...")
     result = ingest_pdfs(pdf_dir)
 
     if result["status"] == "no_documents":
-        print("\n⚠️  No PDF files found!")
-        print("   Place your workout/diet PDF files in the data/pdfs/ folder")
-        print("   Supported: .pdf files")
+        print("\nNo PDF files found.")
+        print("Place your PDF files in the folder structure above.")
     else:
-        print(f"\n✅ Ingestion complete!")
-        print(f"   Documents loaded: {result['documents_loaded']}")
-        print(f"   Chunks created:   {result['chunks_created']}")
-        print(f"\n   Your AI is now trained on your fitness documents!")
+        print("\nIngestion complete.")
+        print(f"PDF files found: {result['pdf_files_found']}")
+        print(f"Pages loaded:    {result['pages_loaded']}")
+        print(f"Chunks created:  {result['chunks_created']}")
+        if result.get("index_type"):
+            print(f"Index type:      {result['index_type']}")
+
+        print("\nBreakdown by category:")
+        for category, count in result["breakdown"].items():
+            if count > 0:
+                print(f"  {category}: {count} PDF files")
+
+        print("\nYour AI can now use your fitness documents.")
 
     print("=" * 60)
 

@@ -5,18 +5,18 @@ This module:
 1. Takes user's query + their profile (goal, diet pref, location)
 2. Searches the vector DB for relevant PDF chunks
 3. Builds a prompt with context + user info
-4. Sends to LLM and returns a personalized plan
+4. Sends to LLM and returns a personalized plan 
 
 The LLM doesn't hallucinate random plans — it uses YOUR PDF content
 as the knowledge base and personalizes based on user preferences.
 """
 
 from langchain_openai import ChatOpenAI
-from langchain.chains import ConversationalRetrievalChain
+from openai import OpenAIError
 from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
-from app.ai.ingestion import get_vector_store
+from app.ai.ingestion import get_vector_store, search_local_knowledge
 from app.core.config import settings
 
 
@@ -56,10 +56,17 @@ def get_llm():
 
 
 def format_docs(docs):
-    return "\n\n---\n\n".join(
-        f"[Source: {doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
-        for doc in docs
-    )
+    formatted = []
+    for doc in docs:
+        meta = doc.metadata
+        header = f"[Category: {meta.get('category', 'unknown')}]"
+        if meta.get("subcategory"):
+            header += f" [Plan: {meta['subcategory']}]"
+        if meta.get("calories"):
+            header += f" [Calories: {meta['calories']}]"
+        header += f" [Source: {meta.get('filename', meta.get('source', 'unknown'))}]"
+        formatted.append(f"{header}\n{doc.page_content}")
+    return "\n\n---\n\n".join(formatted)
 
 
 def get_rag_chain(user_profile: dict | None = None):
@@ -103,20 +110,88 @@ def get_rag_chain(user_profile: dict | None = None):
     return chain
 
 
+def get_direct_chain(user_profile: dict | None = None):
+    """Build a non-RAG chain used when vector search is unavailable."""
+    profile = user_profile or {}
+    prompt = ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),
+        HumanMessagePromptTemplate.from_template("{question}"),
+    ])
+
+    chain = (
+        {
+            "context": lambda _: "No fitness document context is available.",
+            "question": RunnablePassthrough(),
+            "goal": lambda _: profile.get("fitness_goal", "general fitness"),
+            "diet_preference": lambda _: profile.get("diet_preference", "not specified"),
+            "workout_location": lambda _: profile.get("workout_location", "gym"),
+            "experience_level": lambda _: profile.get("experience_level", "beginner"),
+            "weight_kg": lambda _: str(profile.get("weight_kg", "not specified")),
+            "height_cm": lambda _: str(profile.get("height_cm", "not specified")),
+            "age": lambda _: str(profile.get("age", "not specified")),
+        }
+        | prompt
+        | get_llm()
+        | StrOutputParser()
+    )
+    return chain
+
+
 async def generate_response(query: str, user_profile: dict | None = None) -> dict:
     """
     Generate an AI response for the user's fitness query.
 
     Returns dict with 'answer' and 'sources'.
     """
+    if not settings.EMBEDDING_MODEL:
+        relevant_docs = search_local_knowledge(query)
+        if relevant_docs:
+            sources = list({
+                doc.metadata.get("filename", doc.metadata.get("source", "unknown"))
+                for doc in relevant_docs
+            })
+            profile = user_profile or {}
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),
+                HumanMessagePromptTemplate.from_template("{question}"),
+            ])
+            chain = (
+                {
+                    "context": lambda _: format_docs(relevant_docs),
+                    "question": RunnablePassthrough(),
+                    "goal": lambda _: profile.get("fitness_goal", "general fitness"),
+                    "diet_preference": lambda _: profile.get("diet_preference", "not specified"),
+                    "workout_location": lambda _: profile.get("workout_location", "gym"),
+                    "experience_level": lambda _: profile.get("experience_level", "beginner"),
+                    "weight_kg": lambda _: str(profile.get("weight_kg", "not specified")),
+                    "height_cm": lambda _: str(profile.get("height_cm", "not specified")),
+                    "age": lambda _: str(profile.get("age", "not specified")),
+                }
+                | prompt
+                | get_llm()
+                | StrOutputParser()
+            )
+        else:
+            sources = []
+            chain = get_direct_chain(user_profile)
+
+        answer = await chain.ainvoke(query)
+        return {"answer": answer, "sources": sources}
+
     vector_store = get_vector_store()
     retriever = vector_store.as_retriever(search_kwargs={"k": 6})
 
-    # Get relevant documents for source tracking
-    relevant_docs = await retriever.ainvoke(query)
+    try:
+        # Get relevant documents for source tracking
+        relevant_docs = await retriever.ainvoke(query)
+    except OpenAIError:
+        # The current OpenAI project may not have an embeddings model enabled.
+        chain = get_direct_chain(user_profile)
+        answer = await chain.ainvoke(query)
+        return {"answer": answer, "sources": []}
+
     sources = list({doc.metadata.get("source", "unknown") for doc in relevant_docs})
 
-    # Generate response
     chain = get_rag_chain(user_profile)
     answer = await chain.ainvoke(query)
 
